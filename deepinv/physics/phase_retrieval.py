@@ -1,7 +1,11 @@
-from deepinv.physics.forward import Physics, LinearPhysics
-from deepinv.physics.compressed_sensing import CompressedSensing
-from deepinv.optim.phase_retrieval import spectral_methods
+import math
+
+import numpy as np
 import torch
+
+from deepinv.physics.compressed_sensing import CompressedSensing
+from deepinv.physics.forward import Physics, LinearPhysics
+from deepinv.optim.phase_retrieval import compare,merge_order,spectral_methods
 
 
 class PhaseRetrieval(Physics):
@@ -10,9 +14,9 @@ class PhaseRetrieval(Physics):
 
     .. math::
 
-        \forw{x} = |Bx|^2.
+        A(x) = |Bx|^2.
 
-    The linear operator :math:`B` is defined by a :class:`deepinv.physics.LinearPhysics` object.
+    The linear operator :math:`B` is defined by a :meth:`deepinv.physics.LinearPhysics` object.
 
     An existing operator can be loaded from a saved .pth file via ``self.load_state_dict(save_path)``, in a similar fashion to :class:`torch.nn.Module`.
 
@@ -29,7 +33,7 @@ class PhaseRetrieval(Physics):
 
         self.B = B
 
-    def A(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+    def A(self, x: torch.Tensor) -> torch.Tensor:
         r"""
         Applies the forward operator to the input x.
 
@@ -37,13 +41,11 @@ class PhaseRetrieval(Physics):
 
         :param torch.Tensor x: signal/image.
         """
-        return self.B(x, **kwargs).abs().square()
+        return self.B(x).abs().square()
 
     def A_dagger(self, y: torch.Tensor, **kwargs) -> torch.Tensor:
         r"""
-        Computes an initial reconstruction for the image :math:`x` from the measurements :math:`y`.
-
-        We use the spectral methods defined in :class:`deepinv.optim.phase_retrieval.spectral_methods` to obtain an initial inverse.
+        Computes a initial reconstruction for the image :math:`x` from the measurements :math:`y`.
 
         :param torch.Tensor y: measurements.
         :return: (torch.Tensor) an initial reconstruction for image :math:`x`.
@@ -53,8 +55,8 @@ class PhaseRetrieval(Physics):
     def A_adjoint(self, y: torch.Tensor, **kwargs) -> torch.Tensor:
         return self.A_dagger(y, **kwargs)
 
-    def B_adjoint(self, y: torch.Tensor, **kwargs) -> torch.Tensor:
-        return self.B.A_adjoint(y, **kwargs)
+    def B_adjoint(self, y: torch.Tensor) -> torch.Tensor:
+        return self.B.A_adjoint(y)
 
     def B_dagger(self, y):
         r"""
@@ -65,14 +67,14 @@ class PhaseRetrieval(Physics):
         """
         return self.B.A_dagger(y)
 
-    def forward(self, x, **kwargs):
+    def forward(self, x):
         r"""
-        Applies the phase retrieval measurement operator, i.e. :math:`y = \noise{|Bx|^2}` (with noise :math:`N` and/or sensor non-linearities).
+        Applies the phase retrieval measurement operator, i.e. :math:`y = N(|Bx|^2)` (with noise :math:`N` and/or sensor non-linearities).
 
         :param torch.Tensor,list[torch.Tensor] x: signal/image
         :return: (torch.Tensor) noisy measurements
         """
-        return self.sensor(self.noise(self.A(x, **kwargs)))
+        return self.sensor(self.noise(self.A(x)))
 
     def A_vjp(self, x, v):
         r"""
@@ -80,13 +82,18 @@ class PhaseRetrieval(Physics):
 
         .. math::
 
-            A_{vjp}(x, v) = 2 \overline{B}^{\top} \text{diag}(Bx) v.
+            A_{vjp}(x, v) = 2 \overline{B}^{\top} diag(Bx) v.
 
         :param torch.Tensor x: signal/image.
         :param torch.Tensor v: vector.
         :return: (torch.Tensor) the VJP product between :math:`v` and the Jacobian.
         """
         return 2 * self.B_adjoint(self.B(x) * v)
+    
+    def release_memory(self):
+        del self.B
+        torch.cuda.empty_cache()
+        return
 
 
 class RandomPhaseRetrieval(PhaseRetrieval):
@@ -128,6 +135,8 @@ class RandomPhaseRetrieval(PhaseRetrieval):
         channelwise=False,
         dtype=torch.cfloat,
         device="cpu",
+        use_haar=False,
+        test=False,
         **kwargs,
     ):
         self.m = m
@@ -142,6 +151,154 @@ class RandomPhaseRetrieval(PhaseRetrieval):
             channelwise=channelwise,
             dtype=dtype,
             device=device,
+            use_haar=use_haar,
+            test=test,
         )
-        super().__init__(B)
+        super().__init__(B, **kwargs)
         self.name = f"RPR_m{self.m}"
+
+
+class PseudoRandomPhaseRetrieval(PhaseRetrieval):
+    r"""
+    Pseudo-random Phase Retrieval class corresponding to the operator
+
+    .. math::
+
+        A(x) = |F \prod_{i=1}^N (D_i F) x|^2,
+
+    where :math:`F` is the Discrete Fourier Transform (DFT) matrix, and :math:`D_i` are diagonal matrices with elements of unit norm and random phases, and :math:`N` is the number of layers.
+
+    The phase of the diagonal elements of the matrices :math:`D_i` are drawn from a uniform distribution in the interval :math:`[0, 2\pi]`.
+
+    :param int n_layers: number of layers.
+    :param tuple img_shape: shape (C, H, W) of inputs.
+    :param torch.type dtype: Signals are processed in dtype. Default is torch.cfloat.
+    :param str device: Device for computation.
+    """
+
+    def __init__(
+        self,
+        n_layers,
+        input_shape,
+        output_shape,
+        dtype=torch.cfloat,
+        device="cpu",
+        shared_weights=False,
+        drop_tail=False,
+        **kwargs,
+    ):
+        if output_shape is None:
+            output_shape = input_shape
+
+        self.n_layers = n_layers
+        self.shared_weights = shared_weights
+        self.drop_tail = drop_tail
+
+        height_order = compare(input_shape[1:], output_shape[1:])
+        width_order = compare(input_shape[2:], output_shape[2:])
+
+        order = merge_order(height_order, width_order)
+
+        if order == "<":
+            self.mode = "oversampling"
+        elif order == ">":
+            self.mode = "undersampling"
+        elif order == "=":
+            self.mode = "equisampling"
+        else:
+            raise ValueError(f"Does not support different sampling schemes on height and width.")
+        
+        change_top = math.ceil(abs(input_shape[1] - output_shape[1])/2)
+        change_bottom = math.floor(abs(input_shape[1] - output_shape[1])/2)
+        change_left = math.ceil(abs(input_shape[2] - output_shape[2])/2)
+        change_right = math.floor(abs(input_shape[2] - output_shape[2])/2)
+        assert change_top + change_bottom == abs(input_shape[1] - output_shape[1])
+        assert change_left + change_right == abs(input_shape[2] - output_shape[2])
+
+        def padding(tensor: torch.Tensor):
+            return torch.nn.ZeroPad2d((change_left,change_right,change_top,change_bottom))(tensor)
+        self.padding = padding
+
+        def trimming(tensor: torch.Tensor):
+            if change_bottom == 0:
+                tensor = tensor[...,change_top:,:]
+            else:
+                tensor = tensor[...,change_top:-change_bottom,:]
+            if change_right == 0:
+                tensor = tensor[...,change_left:]
+            else:
+                tensor = tensor[...,change_left:-change_right]
+            return tensor
+        self.trimming = trimming
+
+        self.img_shape = input_shape
+        self.output_shape = output_shape
+        self.n = torch.prod(torch.tensor(self.img_shape))
+        self.m = torch.prod(torch.tensor(self.output_shape))
+        self.oversampling_ratio = self.m / self.n
+
+        self.dtype = dtype
+        self.device = device
+
+        self.diagonals = []
+
+        if not shared_weights:
+            for _ in range(self.n_layers):
+                if self.mode == "oversampling":
+                    diagonal = torch.rand(self.output_shape, device=self.device)
+                else:
+                    diagonal = torch.rand(self.img_shape, device=self.device)
+                diagonal = 2 * torch.pi * diagonal
+                diagonal = torch.exp(1j * diagonal)
+                self.diagonals.append(diagonal)
+        else:
+            if self.mode == "oversampling":
+                diagonal = torch.rand(self.output_shape, device=self.device)
+            else:
+                diagonal = torch.rand(self.img_shape, device=self.device)
+            diagonal = 2 * torch.pi * diagonal
+            diagonal = torch.exp(1j * diagonal)
+            for _ in range(self.n_layers):
+                self.diagonals.append(diagonal)
+
+        def A(x):
+            assert x.shape[1:] == self.img_shape, f"x doesn't have the correct shape {x.shape[1:]} != {self.img_shape}"
+
+            if self.mode == "oversampling":
+                x = self.padding(x)
+
+            if not drop_tail:
+                x = torch.fft.fft2(x, norm="ortho")
+            for i in range(self.n_layers):
+                diagonal = self.diagonals[i]
+                x = diagonal * x
+                x = torch.fft.fft2(x, norm="ortho")
+
+            if self.mode == "undersampling":
+                x = self.trimming(x)
+
+            return x
+
+        def A_adjoint(y):
+            assert y.shape[1:] == self.output_shape, f"y doesn't have the correct shape {y.shape[1:]} != {self.output_shape}"
+
+            if self.mode == "undersampling":
+                y = self.padding(y)
+
+            for i in range(self.n_layers):
+                diagonal = self.diagonals[-i - 1]
+                y = torch.fft.ifft2(y, norm="ortho")
+                y = torch.conj(diagonal) * y
+            if not drop_tail:
+                y = torch.fft.ifft2(y, norm="ortho")
+
+            if self.mode == "oversampling":
+                y = self.trimming(y)
+
+            return y
+
+        super().__init__(LinearPhysics(A=A, A_adjoint=A_adjoint), **kwargs)
+        self.name = f"PRPR_m{self.m}"
+
+    def B_dagger(self, y):
+        return self.B.A_adjoint(y)

@@ -98,6 +98,8 @@ def plot(
     cmap="gray",
     fontsize=17,
     interpolation="none",
+    save: str = None,
+    transparent: bool = False,
 ):
     r"""
     Plots a list of images.
@@ -186,17 +188,21 @@ def plot(
     )
 
     if suptitle:
-        plt.suptitle(suptitle, size=12)
+        plt.suptitle(suptitle, size=fontsize)
         fig.subplots_adjust(top=0.75)
 
     for i, row_imgs in enumerate(imgs):
         for r, img in enumerate(row_imgs):
             axs[r, i].imshow(img, cmap=cmap, interpolation=interpolation)
             if titles and r == 0:
-                axs[r, i].set_title(titles[i], size=9)
+                axs[r, i].set_title(titles[i], size=fontsize)
             axs[r, i].axis("off")
     if tight:
         plt.subplots_adjust(hspace=0.01, wspace=0.05)
+
+    if save:
+        plt.savefig(save,transparent=transparent)
+
     if save_dir:
         plt.savefig(save_dir / "images.png", dpi=1200)
         for i, row_imgs in enumerate(imgs):

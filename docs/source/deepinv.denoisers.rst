@@ -13,7 +13,7 @@ or as a standalone denoiser. All denoisers have a ``forward`` method that takes 
     >>> import deepinv as dinv
     >>> denoiser = dinv.models.DRUNet()
     >>> sigma = 0.1
-    >>> image = torch.ones(1, 3, 32, 32) * .5
+    >>> image = torch.ones(1, 3, 32, 32)*.5
     >>> noisy_image =  image + torch.randn(1, 3, 32, 32) * sigma
     >>> denoised_image = denoiser(noisy_image, sigma)
 
@@ -56,7 +56,6 @@ Deep Denoisers
    deepinv.models.GSDRUNet
    deepinv.models.SwinIR
    deepinv.models.DiffUNet
-   deepinv.models.Restormer
 
 
 
@@ -82,7 +81,7 @@ equivariant denoiser.
 
 Complex Denoisers
 --------------------------
-Most denoisers in the library are designed to process real images. However, some problems, e.g., phase retrieval, require processing complex-valued images.The function :class:`deepinv.models.complex.to_complex_denoiser` can convert any real-valued denoiser into a complex-valued denoiser. It can be simply called by ``complex_denoiser = to_complex_denoiser(denoiser)``.
+Originally, the denoisers are designed to process real-valued images. However, some problems, e.g., phase retrieval, require processing complex-valued images. We hence provide a function :class:`deepinv.models.complex.to_complex_denoiser` which can convert any real-valued denoiser into a complex-valued denoiser. It can be simply called by ``complex_denoiser = to_complex_denoiser(denoiser)``.
 
 .. autosummary::
    :toctree: stubs
@@ -138,10 +137,5 @@ associated reference and relevant details. All pretrained weights are hosted on
      - Default: parameters estimated with deepinv on 50 mio patches from the training/validation images from BSDS500 for grayscale and color images.
    * - 
      - Code for generating the weights for the example :ref:`patch-prior-demo` is contained within the demo
-   * - :meth:`deepinv.models.Restormer`
-     - from `Restormer: Efficient Transformer for High-Resolution Image Restoration <https://arxiv.org/abs/2111.09881>`_. Pretrained parameters from `swz30 github <https://github.com/swz30/Restormer/tree/main>`_. 
-   * - 
-     - Also available on `Deepinv Restormer HugginfaceHub <https://huggingface.co/deepinv/Restormer/tree/main>`_.
-
 
 

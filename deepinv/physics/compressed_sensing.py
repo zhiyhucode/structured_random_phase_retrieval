@@ -79,10 +79,9 @@ class CompressedSensing(LinearPhysics):
 
         Compressed sensing operator with 100 measurements for a 3x3 image:
 
-        >>> from deepinv.physics import CompressedSensing
         >>> seed = torch.manual_seed(0) # Random seed for reproducibility
         >>> x = torch.randn(1, 1, 3, 3) # Define random 3x3 image
-        >>> physics = CompressedSensing(m=10, img_shape=(1, 3, 3))
+        >>> physics = CompressedSensing(img_shape=(1, 3, 3), m=10)
         >>> physics(x)
         tensor([[ 0.8522,  0.2133,  0.9897, -0.8714,  1.8953, -0.5284,  1.4422,  0.4238,
                   0.7754, -0.0479]])
@@ -97,6 +96,9 @@ class CompressedSensing(LinearPhysics):
         channelwise=False,
         dtype=torch.float,
         device="cpu",
+        compute_inverse=False,
+        use_haar=False,
+        test=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -111,6 +113,10 @@ class CompressedSensing(LinearPhysics):
         else:
             n = int(np.prod(img_shape))
 
+        if test:
+            self._A = torch.randn((m, n), device=device, dtype=dtype)
+            return
+
         if self.fast:
             self.n = n
             self.D = torch.ones(self.n, device=device)
@@ -123,17 +129,27 @@ class CompressedSensing(LinearPhysics):
             self.D = torch.nn.Parameter(self.D, requires_grad=False)
             self.mask = torch.nn.Parameter(self.mask, requires_grad=False)
         else:
-            self._A = torch.randn((m, n), device=device, dtype=dtype) / np.sqrt(m)
-            self._A_dagger = torch.linalg.pinv(self._A)
-            self._A = torch.nn.Parameter(self._A, requires_grad=False)
-            self._A_dagger = torch.nn.Parameter(self._A_dagger, requires_grad=False)
-            self._A_adjoint = (
-                torch.nn.Parameter(self._A.conj().T, requires_grad=False)
-                .type(dtype)
-                .to(device)
-            )
+            if not use_haar:
+                self._A = torch.nn.Parameter(torch.randn((m, n), device=device, dtype=dtype) / np.sqrt(m), requires_grad=False)
+            else:
+                print("Using Haar matrix")
+                self._A = torch.randn((m, n), device=device, dtype=dtype) / np.sqrt(m)
+                self._A, R = torch.linalg.qr(self._A)
+                L = torch.sgn(torch.diag(R))
+                self._A = self._A * L[None, :]
+                self._A = torch.nn.Parameter(self._A, requires_grad=False)
 
-    def A(self, x, **kwargs):
+            if compute_inverse == True:
+                self._A_dagger = torch.linalg.pinv(self._A)
+                self._A_dagger = torch.nn.Parameter(self._A_dagger, requires_grad=False)
+
+            self._A_adjoint = (
+                    torch.nn.Parameter(self._A.conj().T, requires_grad=False)
+                    .type(dtype)
+                    .to(device)
+                )
+
+    def A(self, x):
         N, C = x.shape[:2]
         if self.channelwise:
             x = x.reshape(N * C, -1)
@@ -150,7 +166,7 @@ class CompressedSensing(LinearPhysics):
 
         return y
 
-    def A_adjoint(self, y, **kwargs):
+    def A_adjoint(self, y):
         y = y.type(self.dtype)
         N = y.shape[0]
         C, H, W = self.img_shape[0], self.img_shape[1], self.img_shape[2]
@@ -171,7 +187,7 @@ class CompressedSensing(LinearPhysics):
         x = x.view(N, C, H, W)
         return x
 
-    def A_dagger(self, y, **kwargs):
+    def A_dagger(self, y):
         y = y.type(self.dtype)
         if self.fast:
             return self.A_adjoint(y)

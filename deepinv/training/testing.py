@@ -6,7 +6,6 @@ from tqdm import tqdm
 import torch
 from pathlib import Path
 from deepinv.loss import PSNR
-import warnings
 
 
 def test(
@@ -15,7 +14,6 @@ def test(
     physics,
     metrics=PSNR(),
     online_measurements=False,
-    physics_generator=None,
     device="cpu",
     plot_images=False,
     save_folder="results",
@@ -43,9 +41,6 @@ def test(
         :ref:`See the libraries' evaluation metrics <loss>`.
     :param bool online_measurements: Generate the measurements in an online manner at each iteration by calling
         ``physics(x)``.
-    :param None, deepinv.physics.generator.PhysicsGenerator physics_generator: Optional physics generator for generating
-        the physics operators. If not None, the physics operators are randomly sampled at each iteration using the generator.
-        Should be used in conjunction with ``online_measurements=True``.
     :param torch.device device: gpu or cpu.
     :param bool plot_images: Plot the ground-truth and estimated images.
     :param str save_folder: Directory in which to save plotted reconstructions.
@@ -58,12 +53,6 @@ def test(
     :returns: A tuple of floats (test_psnr, test_std_psnr, linear_std_psnr, linear_std_psnr) with the PSNR of the
         reconstruction network and a simple linear inverse on the test set.
     """
-
-    if physics_generator is not None and not online_measurements:
-        warnings.warn(
-            "Physics generator is provided but online_measurements is False. Physics generator will not be used."
-        )
-
     save_folder = Path(save_folder)
 
     model.eval()
@@ -117,12 +106,11 @@ def test(
 
                     x = x.to(device)
                     physics_cur = physics[g]
-
-                    if physics_generator is not None:
-                        params = physics_generator.step(x.size(0))
-                        y = physics_cur(x, **params)
+                    if isinstance(physics_cur, torch.nn.DataParallel):
+                        physics_cur.module.noise_model.__init__()
                     else:
-                        y = physics_cur(x)
+                        physics_cur.reset()
+                    y = physics_cur(x)
                 else:
                     x, y = next(
                         iterator
@@ -141,7 +129,7 @@ def test(
                     y, physics_cur, x_gt=x, compute_metrics=True
                 )
             else:
-                x_net = model(y, physics_cur)
+                x_net = model(y, physics[g])
 
             if hasattr(physics_cur, "A_adjoint"):
                 if isinstance(physics_cur, torch.nn.DataParallel):

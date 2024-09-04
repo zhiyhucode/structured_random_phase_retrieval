@@ -30,7 +30,6 @@ extensions = [
     "sphinx_copybutton",
 ]
 
-copybutton_exclude = ".linenos, .gp"
 
 intersphinx_mapping = {
     "numpy": ("http://docs.scipy.org/doc/numpy/", None),

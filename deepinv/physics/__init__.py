@@ -1,6 +1,6 @@
 from .inpainting import Inpainting
 from .compressed_sensing import CompressedSensing
-from .blur import Blur, Downsampling, BlurFFT, SpaceVaryingBlur
+from .blur import Blur, BlindBlur, Downsampling, BlurFFT
 from .range import Decolorize
 from .haze import Haze
 from .forward import (
@@ -26,4 +26,5 @@ from .remote_sensing import Pansharpen
 from .phase_retrieval import (
     PhaseRetrieval,
     RandomPhaseRetrieval,
+    PseudoRandomPhaseRetrieval,
 )

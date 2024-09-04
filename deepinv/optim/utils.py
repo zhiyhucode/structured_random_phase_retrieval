@@ -1,9 +1,8 @@
+import deepinv.utils
 from deepinv.utils import zeros_like
 import torch
 from tqdm import tqdm
 import torch.nn as nn
-from typing import Callable
-from deepinv.utils import TensorList
 
 
 def check_conv(X_prev, X, it, crit_conv="residual", thres_conv=1e-3, verbose=False):
@@ -29,13 +28,7 @@ def check_conv(X_prev, X, it, crit_conv="residual", thres_conv=1e-3, verbose=Fal
         return False
 
 
-def conjugate_gradient(
-    A: Callable,
-    b: torch.Tensor,
-    max_iter: float = 1e2,
-    tol: float = 1e-5,
-    eps: float = 1e-8,
-):
+def conjugate_gradient(A, b, max_iter=1e2, tol=1e-5):
     """
     Standard conjugate gradient algorithm.
 
@@ -44,42 +37,38 @@ def conjugate_gradient(
     For more details see: http://en.wikipedia.org/wiki/Conjugate_gradient_method
 
     :param (callable) A: Linear operator as a callable function, has to be square!
-    :param torch.Tensor b: input tensor of shape (B, ...)
+    :param torch.Tensor b: input tensor
     :param int max_iter: maximum number of CG iterations
     :param float tol: absolute tolerance for stopping the CG algorithm.
-    :param float eps: a small value for numerical stability
-    :return: torch.Tensor :math:`x` of shape (B, ...) verifying :math:`Ax=b`.
+    :return: torch.Tensor :math:`x` verifying :math:`Ax=b`.
 
     """
 
-    x = zeros_like(b)
-
     def dot(a, b):
-        ndim = a[0].ndim if isinstance(a, TensorList) else a.ndim
-        dot = (a.conj() * b).sum(
-            dim=tuple(range(1, ndim)), keepdim=True
-        )  # performs batched dot product
-        if isinstance(dot, TensorList):
+        dot = (a.conj() * b).sum(dim=(-1, -2, -3), keepdim=False)
+        if isinstance(dot, deepinv.utils.TensorList):
             aux = 0
             for d in dot:
                 aux += d
             dot = aux
         return dot
 
-    r = b - A(x)
+    x = zeros_like(b)
+
+    r = b
     p = r
     rsold = dot(r, r)
 
-    for _ in range(int(max_iter)):
+    for i in range(int(max_iter)):
         Ap = A(p)
-        alpha = rsold / (dot(p, Ap) + eps)
+        alpha = rsold / dot(p, Ap)
         x = x + p * alpha
-        r = r - Ap * alpha
-        rsnew = dot(r, r)
-        assert rsnew.isfinite().all(), "Conjugate gradient diverged"
-        if all(rsnew.abs() < tol**2):
+        r = r + Ap * (-alpha)
+        rsnew = torch.real(dot(r, r))
+        # print(rsnew.sqrt())
+        if rsnew.sqrt() < tol:
             break
-        p = r + p * (rsnew / (rsold + eps))
+        p = r + p * (rsnew / rsold)
         rsold = rsnew
 
     return x

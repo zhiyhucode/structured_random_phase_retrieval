@@ -2,12 +2,7 @@ r"""
 Random phase retrieval and reconstruction methods.
 ===================================================
 
-This example shows how to create a random phase retrieval operator and generate phaseless measurements from a given image. The example showcases 4 different reconstruction methods to recover the image from the phaseless measurements:
-
-#. Gradient descent with random initialization;
-#. Spectral methods;
-#. Gradient descent with spectral methods initialization;
-#. Gradient descent with PnP denoisers.
+This example demonstrates how to create a random phase retrieval operator and use it to generate measurements from a given image. We then uses 4 different reconstruction methods to recover the image given theses measurements: 1. Gradient descent with random initialization; 2. Spectral methods; 3. Gradient descent with spectral methods initialization; 4. Gradient descent with PnP denoisers.
 
 """
 
@@ -20,7 +15,7 @@ import torch
 import matplotlib.pyplot as plt
 from deepinv.models import DRUNet
 from deepinv.optim.data_fidelity import L2
-from deepinv.optim.prior import PnP
+from deepinv.optim.prior import PnP, Zero
 from deepinv.optim.optimizers import optim_builder
 from deepinv.utils.demo import load_url_image, get_image_url
 from deepinv.utils.plotting import plot
@@ -69,14 +64,14 @@ assert torch.allclose(x_phase.real**2 + x_phase.imag**2, torch.tensor(1.0))
 # Measurements generation
 # ---------------------------------------
 # Create a random phase retrieval operator with an
-# oversampling ratio (measurements/pixels) of 5.0,
+# oversampling ratio (measurements/signals) of 1.2,
 # and generate measurements from the signal with additive Gaussian noise.
 
 # Define physics information
-oversampling_ratio = 5.0
+oversampling_ratio = 1.2
 img_shape = x.shape[1:]
 m = int(oversampling_ratio * torch.prod(torch.tensor(img_shape)))
-noise_level_img = 0.05  # Gaussian Noise standard deviation for the degradation
+noise_level_img = 0.03  # Gaussian Noise standard deviation for the degradation
 n_channels = 1  # 3 for color images, 1 for gray-scale images
 
 # Create the physics
@@ -92,11 +87,13 @@ y = physics(x_phase)
 # %%
 # Reconstruction with gradient descent and random initialization
 # ---------------------------------------------------------------
-# First, we use the function :class:`deepinv.optim.L2` as the data fidelity function, and directly call its ``grad`` method to run a gradient descent algorithm. The initial guess is a random complex signal.
+# First, we use the function :class:`deepinv.optim.L2` as the data fidelity function, and the class :class:`deepinv.optim.optim_iterators.GDIteration` as the optimizer to run a gradient descent algorithm. The initial guess is a random complex signal.
 
 data_fidelity = L2()
-# Step size for the gradient descent
-stepsize = 0.10
+prior = Zero()
+iterator = dinv.optim.optim_iterators.GDIteration()
+# Parameters for the optimizer, including stepsize and regularization coefficient.
+optim_params = {"stepsize": 0.06, "lambda": 1.0, "g_param": []}
 num_iter = 1000
 
 # Initial guess
@@ -105,9 +102,15 @@ x_phase_gd_rand = torch.randn_like(x_phase)
 loss_hist = []
 
 for _ in range(num_iter):
-    x_phase_gd_rand = x_phase_gd_rand - stepsize * data_fidelity.grad(
-        x_phase_gd_rand, y, physics
+    res = iterator(
+        {"est": (x_phase_gd_rand,), "cost": 0},
+        cur_data_fidelity=data_fidelity,
+        cur_prior=prior,
+        cur_params=optim_params,
+        y=y,
+        physics=physics,
     )
+    x_phase_gd_rand = res["est"][0]
     loss_hist.append(data_fidelity(x_phase_gd_rand, y, physics))
 
 print("initial loss:", loss_hist[0])
@@ -121,7 +124,7 @@ plt.show()
 # %%
 # Phase correction and signal reconstruction
 # -----------------------------------------------------------
-# The solution of the optimization algorithm x_est may be any phase-shifted version of the original complex signal x_phase, i.e., x_est = a * x_phase where a is an arbitrary unit norm complex number.
+# Initially, the solution of the optimization algorithm x_est may be any phase-shifted version of the original complex signal x_phase, i.e., x_est = a * x_phase where a is an arbitrary unit norm complex number.
 # Therefore, we use the function :class:`deepinv.optim.phase_retrieval.correct_global_phase` to correct the global phase shift of the estimated signal x_est to make it closer to the original signal x_phase.
 # We then use ``torch.angle`` to extract the phase information. With the range of the returned value being [-pi/2, pi/2], we further normalize it to be [0, 1].
 # This operation will later be done for all the reconstruction methods.
@@ -139,7 +142,7 @@ plot([x, x_gd_rand], titles=["Signal", "Reconstruction"], rescale_mode="clip")
 # Spectral methods :class:`deepinv.optim.phase_retrieval.spectral_methods` offers a good initial guess on the original signal. Moreover, :class:`deepinv.physics.RandomPhaseRetrieval` uses spectral methods as its default reconstruction method `A_dagger`, which we can directly call.
 
 # Spectral methods return a tensor with unit norm.
-x_phase_spec = physics.A_dagger(y, n_iter=300)
+x_phase_spec = physics.A_dagger(y, n_iter=4)
 # Correct the norm of the estimated signal
 x_phase_spec = x_phase_spec * torch.sqrt(y.sum())
 
@@ -159,14 +162,20 @@ plot([x, x_spec], titles=["Signal", "Reconstruction"], rescale_mode="clip")
 # The estimate from spectral methods can be directly used as the initial guess for the gradient descent algorithm.
 
 # Initial guess from spectral methods
-x_phase_gd_spec = physics.A_dagger(y, n_iter=300)
+x_phase_gd_spec = physics.A_dagger(y, n_iter=4)
 x_phase_gd_spec = x_phase_gd_spec * torch.sqrt(y.sum())
 
 loss_hist = []
 for _ in range(num_iter):
-    x_phase_gd_spec = x_phase_gd_spec - stepsize * data_fidelity.grad(
-        x_phase_gd_spec, y, physics
+    res = iterator(
+        {"est": (x_phase_gd_spec,), "cost": 0},
+        cur_data_fidelity=data_fidelity,
+        cur_prior=prior,
+        cur_params=optim_params,
+        y=y,
+        physics=physics,
     )
+    x_phase_gd_spec = res["est"][0]
     loss_hist.append(data_fidelity(x_phase_gd_spec, y, physics))
 
 print("intial loss:", loss_hist[0])
@@ -200,13 +209,13 @@ denoiser = DRUNet(
     device=device,
 )
 # The original denoiser is designed for real-valued images, so we need to convert it to a complex-valued denoiser for phase retrieval problems.
-denoiser_complex = to_complex_denoiser(denoiser, mode="abs_angle")
+denoiser_complex = to_complex_denoiser(denoiser)
 
 # Algorithm parameters
 data_fidelity = L2()
 prior = PnP(denoiser=denoiser_complex)
-params_algo = {"stepsize": 0.30, "g_param": 0.04}
-max_iter = 400
+params_algo = {"stepsize": 0.10, "g_param": 0.05}
+max_iter = 100
 early_stop = True
 verbose = True
 
@@ -230,6 +239,8 @@ x_phase_pnp, metrics = model(y, physics, x_gt=x_phase, compute_metrics=True)
 
 # correct possible global phase shifts
 x_pnp = correct_global_phase(x_phase_pnp, x_phase)
+# now no global phase shift should exist
+# assert torch.allclose(x_est, x_phase)
 # extract phase information and normalize to the range [0, 1]
 x_pnp = torch.angle(x_pnp) / (2 * torch.pi) + 0.5
 plot([x, x_pnp], titles=["Signal", "Reconstruction"], rescale_mode="clip")
@@ -238,8 +249,8 @@ plot([x, x_pnp], titles=["Signal", "Reconstruction"], rescale_mode="clip")
 # Overall comparison
 # -----------------------------------------------------------
 # We visualize the original image and the reconstructed images from the four methods.
-# We further compute the PSNR (Peak Signal-to-Noise Ratio) scores (higher better) for every reconstruction and their cosine similarities with the original image (range in [0,1], higher better).
-# In conclusion, gradient descent with random intialization provides a poor reconstruction, while spectral methods provide a good initial estimate which can later be improved by gradient descent to acquire the best reconstruction results. Besides, the PnP framework with a deep denoiser as the prior also provides a very good denoising results as it exploits prior information about the set of natural images.
+# We further computed the PSNR (Peak Signal-to-Noise Ratio) scores (higher better) for every reconstruction and their cosine similarities with the original image (range in [0,1], higher better).
+# In conclusion, gradient descent with ranodom intialization barely provides a reconstruction, while spectral methods provide a good initial estimate which can later be improved by gradient descent. Besides, the PnP framework with a deep denoiser as the prior provides the best denoising effect and overall reconstruction results.
 
 imgs = [x, x_gd_rand, x_spec, x_gd_spec, x_pnp]
 plot(
