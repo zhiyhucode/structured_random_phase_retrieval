@@ -21,7 +21,7 @@ Getting Started
    
    .. code-block:: bash
 
-      git clone https://github.com/zhiyhu/structured_random_phase_retrieval.git
+      git clone https://github.com/zhiyhucode/structured_random_phase_retrieval.git
       cd structured_random_phase_retrieval
 
 2. Install the required dependencies:
