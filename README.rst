@@ -50,7 +50,7 @@ This project is licensed under the BSD 3-Clause License - see the ``LICENSE`` fi
 Citation
 --------
 
-If you use this code in your research, please cite our paper:
+If you are interested in citing the work, please cite our paper:
 
 .. code-block:: bibtex
 
